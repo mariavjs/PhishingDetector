@@ -1,0 +1,34 @@
+version: "3.8"
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-phish}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-phishpass}
+      POSTGRES_DB: ${POSTGRES_DB:-phishdb}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - phishnet
+
+  web:
+    build: .
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-phish}:${POSTGRES_PASSWORD:-phishpass}@db:5432/${POSTGRES_DB:-phishdb}"
+      # opcional: variáveis de configuração
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+    networks:
+      - phishnet
+
+volumes:
+  db_data:
+
+networks:
+  phishnet:
