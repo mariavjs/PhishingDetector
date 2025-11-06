@@ -1,31 +1,36 @@
-# analyser.py
+# src/analyser.py
 import re
 import socket
 import ssl
 from urllib.parse import urlparse
 from datetime import datetime
+import os
 
 import tldextract
 import requests
 from bs4 import BeautifulSoup
 
-# Carrega blacklist simples a partir de arquivo (one domain per line)
-import os
+# Optional imports - used if installed; code will fallback se não existir
+try:
+    import whois as whois_lib
+except Exception:
+    whois_lib = None
 
-def load_blacklist(path=None):
-    # Se não passar path, usa data/blacklist.txt relativa a este ficheiro analyser.py
-    if path is None:
-        here = os.path.dirname(__file__)
-        path = os.path.join(here, "data", "blacklist.txt")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return set(line.strip().lower() for line in f if line.strip() and not line.strip().startswith("#"))
-    except FileNotFoundError:
-        # opcional: log para facilitar debug
-        print(f"[WARN] Blacklist não encontrada em: {path}")
-        return set()
+try:
+    from rapidfuzz import fuzz
+except Exception:
+    fuzz = None
 
+# DB access for blacklist snapshot
+try:
+    from db import SessionLocal, BlacklistEntry
+except Exception:
+    SessionLocal = None
+    BlacklistEntry = None
 
+# ---------------------------------------------------------------------
+# Utilities: normalize/parse
+# ---------------------------------------------------------------------
 def normalize_url(url: str) -> str:
     if not url:
         return ""
@@ -36,7 +41,7 @@ def normalize_url(url: str) -> str:
 
 def get_domain_from_url(url):
     """
-    Retorna o hostname (ex: a.b.example.com) e o 'registered_domain' (example.com)
+    Retorna (hostname, registered_domain)
     """
     try:
         nurl = normalize_url(url)
@@ -45,7 +50,6 @@ def get_domain_from_url(url):
             return None, None
         hostname = parsed.hostname.lower()
         ext = tldextract.extract(hostname)
-        registered = None
         if ext.suffix:
             registered = ext.domain + "." + ext.suffix
         else:
@@ -54,44 +58,7 @@ def get_domain_from_url(url):
     except Exception:
         return None, None
 
-def check_basic_indicators(url):
-    """
-    Retorna (suspicious: bool, reasons: list[str])
-    """
-    reasons = []
-    suspicious = False
-
-    hostname, registered = get_domain_from_url(url)
-    if not hostname:
-        return True, ["URL inválida / não foi possível extrair domínio"]
-
-    # 1) números no domínio registrado (ex: paypa1.com)
-    if registered and re.search(r'\d', registered):
-        suspicious = True
-        reasons.append("Presença de números no domínio registrado (possível typosquatting)")
-
-    # 2) subdomínios excessivos (heurística: > 3 níveis além do registered)
-    if hostname.count('.') - (registered.count('.') if registered else 0) > 2:
-        suspicious = True
-        reasons.append("Uso excessivo de subdomínios")
-
-    # 3) caracteres especiais na URL (fora os usuais)
-    # Permitimos os caracteres padrão de path/query; aqui procuramos por caracteres óbvios estranhos
-    if re.search(r"[<>\\\^\{\}\|`]", url):
-        suspicious = True
-        reasons.append("Caracteres especiais não usuais encontradas na URL")
-
-    # 4) comprimento excessivo
-    if len(url) > 200:
-        suspicious = True
-        reasons.append("URL muito longa")
-
-    # 5) domínio muito novo/curto (será complementado em B com whois)
-    return suspicious, reasons
-from urllib.parse import urlparse
-
 def host_only(s):
-    # remove protocolo/paths e "www."
     if not s:
         return s
     try:
@@ -103,6 +70,79 @@ def host_only(s):
     except:
         return s.lower()
 
+# ---------------------------------------------------------------------
+# Blacklist loading: from DB (preferred) with fallback to file
+# ---------------------------------------------------------------------
+def load_blacklist_from_db():
+    """
+    Retorna set() de domínios ativos na tabela blacklist.
+    Se DB não estiver disponível ou vazio, retorna set().
+    """
+    if SessionLocal is None:
+        return set()
+    s = SessionLocal()
+    try:
+        rows = s.query(BlacklistEntry).filter_by(active=True).all()
+        return set(r.domain for r in rows if r and r.domain)
+    except Exception:
+        return set()
+    finally:
+        s.close()
+
+def load_blacklist_file(path=None):
+    if path is None:
+        here = os.path.dirname(__file__)
+        path = os.path.join(here, "data", "blacklist.txt")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return set(line.strip().lower() for line in f if line.strip() and not line.strip().startswith("#"))
+    except FileNotFoundError:
+        return set()
+
+def load_blacklist(prefer_db=True, file_path=None):
+    if prefer_db:
+        dbset = load_blacklist_from_db()
+        if dbset:
+            return dbset
+        # fallback to file
+    return load_blacklist_file(file_path)
+
+# ---------------------------------------------------------------------
+# Basic heuristics
+# ---------------------------------------------------------------------
+def check_basic_indicators(url):
+    reasons = []
+    suspicious = False
+
+    hostname, registered = get_domain_from_url(url)
+    if not hostname:
+        return True, ["URL inválida / não foi possível extrair domínio"]
+
+    # numbers in registered domain (typosquatting)
+    if registered and re.search(r'\d', registered):
+        suspicious = True
+        reasons.append("Presença de números no domínio registrado (possível typosquatting)")
+
+    # subdomains excessive
+    if hostname.count('.') - (registered.count('.') if registered else 0) > 2:
+        suspicious = True
+        reasons.append("Uso excessivo de subdomínios")
+
+    # odd special characters
+    if re.search(r"[<>\\\^\{\}\|`]", url):
+        suspicious = True
+        reasons.append("Caracteres especiais não usuais encontradas na URL")
+
+    # long url
+    if len(url) > 200:
+        suspicious = True
+        reasons.append("URL muito longa")
+
+    return suspicious, reasons
+
+# ---------------------------------------------------------------------
+# Blacklist check (works with a set of strings)
+# ---------------------------------------------------------------------
 def check_blacklist(url, blacklist_set):
     hostname, registered = get_domain_from_url(url)
     if not hostname:
@@ -110,35 +150,28 @@ def check_blacklist(url, blacklist_set):
     domain_lower = host_only(hostname)
     reg_lower = (registered or "").lower()
     if domain_lower in blacklist_set or reg_lower in blacklist_set:
-        return True, f"Domínio '{hostname}' ou '{registered}' está na blacklist local"
+        return True, f"Domínio '{hostname}' ou '{registered}' está na blacklist"
     for bad in blacklist_set:
         if domain_lower.endswith("." + bad):
             return True, f"Domínio '{hostname}' corresponde a subdomínio de '{bad}' na blacklist"
     return False, None
 
-
+# ---------------------------------------------------------------------
+# SSL certificate check
+# ---------------------------------------------------------------------
 def check_ssl_certificate(url, timeout=5):
-    """
-    Tenta obter informações básicas do certificado.
-    Retorna (ok: bool, msg: str).
-    Não lança exceções - sempre captura e devolve mensagem.
-    """
     hostname, _ = get_domain_from_url(url)
     if not hostname:
         return False, "Domínio inválido para checagem SSL"
 
     try:
         ctx = ssl.create_default_context()
-        # Não usamos verify here because we only want peer cert; socket timeout to avoid hang
         with socket.create_connection((hostname, 443), timeout=timeout) as sock:
             with ctx.wrap_socket(sock, server_hostname=hostname) as ssock:
                 cert = ssock.getpeercert()
-                # issuer e subject podem ser listas; extraímos commonName / orgName quando possível
                 def extract_name(tuples):
-                    # tuples example: (('commonName', 'Let's Encrypt Authority X3'),)
                     if not tuples:
                         return ""
-                    # tuples may be nested lists
                     try:
                         for part in tuples:
                             for k, v in part:
@@ -148,7 +181,6 @@ def check_ssl_certificate(url, timeout=5):
                                     return v
                     except Exception:
                         pass
-                    # fallback stringify
                     try:
                         return str(tuples)
                     except Exception:
@@ -156,7 +188,6 @@ def check_ssl_certificate(url, timeout=5):
                 issuer = extract_name(cert.get("issuer"))
                 subject = extract_name(cert.get("subject"))
                 not_after = cert.get('notAfter')
-                # tenta parse de data para formato legível
                 exp_str = not_after
                 try:
                     if not_after:
@@ -169,11 +200,10 @@ def check_ssl_certificate(url, timeout=5):
     except Exception as e:
         return False, f"Erro ao validar certificado SSL/TLS: {e}"
 
+# ---------------------------------------------------------------------
+# Fetch page content + detect forms / keywords
+# ---------------------------------------------------------------------
 def fetch_page_and_check_forms(url, timeout=6):
-    """
-    Tenta buscar a página e detecta formulários que peçam senha/credenciais.
-    Retorna (found_suspicious:bool, reasons:list[str], http_status:int|None)
-    """
     try:
         nurl = normalize_url(url)
         r = requests.get(nurl, timeout=timeout, headers={"User-Agent": "phish-detector/1.0"})
@@ -187,7 +217,6 @@ def fetch_page_and_check_forms(url, timeout=6):
         for f in forms:
             if f.find("input", {"type": "password"}):
                 reasons.append("Formulário com campo de senha detectado")
-            # procura por placeholders/names/labels com palavras-suspeitas
             form_text = (f.get_text(" ") or "").lower()
             if any(k in form_text for k in ["senha", "password", "login", "confirme", "verificar", "bank"]):
                 reasons.append("Formulário contém texto que pede credenciais")
@@ -199,49 +228,155 @@ def fetch_page_and_check_forms(url, timeout=6):
     except Exception as e:
         return False, [f"Não foi possível buscar/parsear página: {e}"], None
 
-def analyze_url(url, blacklist_path="data/blacklist.txt"):
-    """
-    Retorna dicionário com:
-      - url, domain, registered_domain, is_suspicious (bool), score (0-100), detalhes (list)
-    """
+# ---------------------------------------------------------------------
+# Redirects
+# ---------------------------------------------------------------------
+def check_redirects(url, timeout=6):
+    try:
+        nurl = normalize_url(url)
+        r = requests.get(nurl, timeout=timeout, headers={"User-Agent": "phish-detector/1.0"}, allow_redirects=True)
+        history = r.history
+        hosts = []
+        for h in history:
+            try:
+                ph = urlparse(h.url).hostname
+                if ph:
+                    hosts.append(ph.lower())
+            except:
+                pass
+        return hosts, r.url, r.status_code
+    except Exception:
+        return [], None, None
+
+# ---------------------------------------------------------------------
+# WHOIS (best-effort)
+# ---------------------------------------------------------------------
+def whois_info(registered_domain):
+    if whois_lib is None or not registered_domain:
+        return None
+    try:
+        w = whois_lib.whois(registered_domain)
+        creation = w.creation_date
+        if isinstance(creation, list):
+            creation = creation[0]
+        if creation is None:
+            return None
+        if isinstance(creation, str):
+            try:
+                creation = datetime.fromisoformat(creation)
+            except Exception:
+                pass
+        if isinstance(creation, datetime):
+            age_days = (datetime.utcnow() - creation).days
+            return {"creation_date": creation, "age_days": age_days}
+    except Exception:
+        return None
+    return None
+
+# ---------------------------------------------------------------------
+# Typosquatting / similarity (best-effort)
+# ---------------------------------------------------------------------
+COMMON_BRANDS = [
+    "google.com", "facebook.com", "paypal.com", "apple.com", "microsoft.com",
+    "amazon.com", "bankofamerica.com"
+]
+
+def typosquat_score(registered_domain, brands=COMMON_BRANDS):
+    if not registered_domain:
+        return None, 0
+    best = None
+    best_score = 0
+    if fuzz:
+        for b in brands:
+            s = fuzz.ratio(registered_domain, b)
+            if s > best_score:
+                best_score = int(s)
+                best = b
+    else:
+        # fallback: simple equality / substring heuristic
+        for b in brands:
+            s = 100 if registered_domain == b else (80 if b.split(".")[0] in registered_domain else 0)
+            if s > best_score:
+                best_score = s
+                best = b
+    return best, best_score
+
+# ---------------------------------------------------------------------
+# Audit helper
+# ---------------------------------------------------------------------
+def add_audit(audit_list, rule_name, points, reason):
+    audit_list.append({"rule": rule_name, "points": int(points), "reason": reason})
+
+# ---------------------------------------------------------------------
+# Main analyze (Conceito B)
+# ---------------------------------------------------------------------
+def analyze_url_with_b(url, prefer_db=True, blacklist_file=None):
     details = []
-    blacklist = load_blacklist(blacklist_path)
+    audit = []
+
+    # load blacklist (db preferred)
+    blacklist = load_blacklist(prefer_db=prefer_db, file_path=blacklist_file)
+
     hostname, registered = get_domain_from_url(url)
 
-    # basic indicators
+    # basic
     suspicious_basic, reasons_basic = check_basic_indicators(url)
     if reasons_basic:
         details.extend(reasons_basic)
+    add_audit(audit, "basic_indicators", 20 if suspicious_basic else 0, "; ".join(reasons_basic) if reasons_basic else "none")
 
     # blacklist
     blacklisted, black_msg = check_blacklist(url, blacklist)
     if blacklisted and black_msg:
         details.append(black_msg)
+        add_audit(audit, "blacklist", 70, black_msg)
+    else:
+        add_audit(audit, "blacklist", 0, "not listed")
 
-    # SSL
+    # ssl
     ssl_ok, ssl_msg = check_ssl_certificate(url)
     details.append(ssl_msg)
+    add_audit(audit, "ssl", 0 if ssl_ok else 10, ssl_msg)
 
-    # fetch page and check forms
+    # whois
+    who = whois_info(registered)
+    if who:
+        details.append(f"Domínio criado há {who['age_days']} dias (creation: {who['creation_date']})")
+        add_audit(audit, "whois_age", 15 if who["age_days"] <= 30 else 0, f"{who['age_days']} dias")
+    else:
+        details.append("WHOIS indisponível ou não suportado")
+        add_audit(audit, "whois_age", 0, "WHOIS indisponível")
+
+    # typosquat
+    best_brand, ratio = typosquat_score(registered)
+    if ratio and ratio >= 80:
+        details.append(f"Dominio similar a {best_brand} (similaridade {ratio}%) — possível typosquatting")
+        add_audit(audit, "typosquat", 30, f"similaridade {ratio}% com {best_brand}")
+    else:
+        add_audit(audit, "typosquat", 0, f"max sim {ratio}%")
+
+    # redirects
+    redirect_hosts, final_url, final_status = check_redirects(url)
+    if redirect_hosts:
+        domain_changes = sum(1 for h in redirect_hosts if h and h != hostname)
+        if domain_changes > 0:
+            details.append(f"Redirecionamento entre domínios detectado: {redirect_hosts} -> {final_url}")
+            add_audit(audit, "redirects", 20, f"{domain_changes} troca(s) de domínio")
+        else:
+            add_audit(audit, "redirects", 0, "redirecionamentos no mesmo domínio")
+    else:
+        add_audit(audit, "redirects", 0, "sem redirecionamentos detectados")
+
+    # content/forms
     content_susp, content_reasons, http_status = fetch_page_and_check_forms(url)
     if content_reasons:
         details.extend(content_reasons)
+    add_audit(audit, "content_forms", 20 if content_susp else 0, "; ".join(content_reasons) if content_reasons else "none")
 
-    # scoring simples
-    score = 0
-    if blacklisted:
-        score += 70
-    if suspicious_basic:
-        score += 20
-    if not ssl_ok:
-        score += 10
-    if content_susp:
-        score += 20
-    # cap
-    score = min(score, 100)
-
+    # final scoring
+    score = sum(a["points"] for a in audit)
+    score = max(0, min(score, 100))
     is_suspicious = score >= 50
-
     if not details:
         details = ["Nenhuma característica suspeita encontrada"]
 
@@ -252,16 +387,17 @@ def analyze_url(url, blacklist_path="data/blacklist.txt"):
         "is_suspicious": is_suspicious,
         "score": score,
         "detalhes": details,
-        "http_status": http_status
+        "http_status": http_status,
+        "audit": audit
     }
 
+# Keep backward-compatible name
+def analyze_url(url, *args, **kwargs):
+    return analyze_url_with_b(url, *args, **kwargs)
+
+# quick test when run directly
 if __name__ == "__main__":
-    tests = [
-        "example.com",
-        "paypa1.com/login",
-        "very.long.subdomain.login.paypal.example.com",
-        "bit.ly/abcdef"
-    ]
+    tests = ["example.com", "paypa1.com/login", "very.long.subdomain.login.paypal.example.com", "bit.ly/abcdef"]
     for t in tests:
-        r = analyze_url(t)
+        r = analyze_url_with_b(t)
         print(t, "->", r["score"], r["detalhes"])
