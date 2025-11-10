@@ -8,6 +8,13 @@ O projeto tem:
 - **Uma extensão para Firefox**, que realiza verificações em tempo real enquanto o usuário navega;
 - **Um dashboard em Streamlit**, usado para visualizar histórico, métricas, resultados das análises e adicionar numa blacklist domínios que o usuário souber que é suspeito.
 
+## APIs e Ferramentas Utilizadas
+
+- **Google Safe Browsing API**: para verificação de URLs contra base de dados de sites maliciosos e phishing
+- **Análise WHOIS**: verificação de informações do domínio
+- **Verificação SSL/TLS**: validação de certificados de segurança
+- **Análise DNS**: verificação de registros DNS do domínio
+
 
 ## Funcionalidades implementadas no projeto
 
