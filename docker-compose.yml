@@ -16,14 +16,17 @@ services:
     build: .
     depends_on:
       - db
+    env_file:
+      - .env
     environment:
       DATABASE_URL: "postgresql://${POSTGRES_USER:-phish}:${POSTGRES_PASSWORD:-phishpass}@db:5432/${POSTGRES_DB:-phishdb}"
-      # opcional: variáveis de configuração
       PYTHONUNBUFFERED: "1"
     ports:
       - "8501:8501"
     volumes:
       - .:/app
+    command: >
+      bash -lc "set -o allexport && [ -f /app/.env ] && source /app/.env || true && set +o allexport && exec streamlit run src/web_interface.py --server.port=8501 --server.address=0.0.0.0"
     networks:
       - phishnet
 

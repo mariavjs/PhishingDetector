@@ -4,6 +4,9 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, JSON, T
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
+from sqlalchemy import text
+from sqlalchemy import inspect, text
+import logging
 
 DATABASE_URL = os.getenv("DATABASE_URL") or "sqlite:///data/history.db"
 
@@ -32,12 +35,31 @@ class BlacklistEntry(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     active = Column(Boolean, default=True)
 
-    # index for faster suffix searches (Postgres supports trigram/GIN; simple index provided)
-    __table_args__ = (
-        Index("ix_blacklist_domain", "domain"),
-    )
+   
+
+
+
+logger = logging.getLogger(__name__)
 
 def init_db():
+    inspector = inspect(engine)
+    try:
+        if inspector.has_table("blacklist"):
+            try:
+                idxs = [i["name"] for i in inspector.get_indexes("blacklist")]
+            except Exception:
+                idxs = []
+            if "ix_blacklist_domain" in idxs:
+                with engine.connect() as conn:
+                    try:
+                        conn.execute(text('DROP INDEX IF EXISTS ix_blacklist_domain'))
+                        conn.commit()
+                        logger.info("Dropped ix_blacklist_domain")
+                    except Exception as e:
+                        logger.warning("Não foi possível dropar ix_blacklist_domain: %s", e)
+    except Exception as e:
+        logger.debug("init_db inspector falhou: %s", e)
+
     Base.metadata.create_all(bind=engine)
 
 # helpers
