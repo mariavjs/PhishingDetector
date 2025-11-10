@@ -1,0 +1,36 @@
+{
+  "manifest_version": 2,
+  "name": "PhishGuard",
+  "version": "0.1",
+  "description": "Extensão protótipo para detectar phishing (dev only).",
+  "permissions": [
+    "tabs",
+    "storage",
+    "<all_urls>",
+    "notifications"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ],
+    "persistent": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content_script.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "48": "icons/icon48.png"
+  }
+}
