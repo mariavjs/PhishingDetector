@@ -114,11 +114,11 @@ with aba_analise:
                         "Considere adicioná-lo à blacklist para futuras verificações."
                     )
                    
-                st.subheader("📋 Detalhes da análise")
+                st.subheader("Detalhes da análise")
                 for d in result.get("detalhes", []):
                     st.write("- " + d)
 
-                st.subheader("🧩 Audit trail (regras aplicadas)")
+                st.subheader("Audit trail (regras aplicadas)")
                 for a in result.get("audit", []):
                     st.write(f"- {a['rule']}: +{a['points']} pts — {a['reason']}")
                 st.caption("Cada regra contribui pontos ao score. ≥50 indica suspeito.")
@@ -126,7 +126,7 @@ with aba_analise:
                 meta = result.get("meta", {}) or {}
                 gsb = meta.get("gsb")
 
-                st.subheader("🔧 Informações técnicas")
+                st.subheader("Informações técnicas")
                 st.write("**Google Safe Browsing**")
                 if gsb:
                     if gsb.get("match"):
@@ -147,7 +147,7 @@ with aba_analise:
 # ABA 2 - DASHBOARD
 # ===========================================================
 with aba_dashboard:
-    st.title("📊 Dashboard de Análises Recentes")
+    st.title("Dashboard de Análises Recentes")
 
     with SessionLocal() as s:
         scans = s.query(ScanHistory).order_by(ScanHistory.timestamp.desc()).limit(50).all()
@@ -170,7 +170,7 @@ with aba_dashboard:
         st.pyplot(fig1)
 
         st.download_button(
-            "📥 Exportar CSV",
+            "Exportar CSV",
             df.to_csv(index=False).encode("utf-8"),
             "historico_scans.csv",
             "text/csv"
@@ -182,7 +182,7 @@ with aba_dashboard:
 # ABA 3 - BLACKLIST ADMIN
 # ===========================================================
 with aba_blacklist:
-    st.title("🗂 Gerenciar Blacklist")
+    st.title("Gerenciar Blacklist")
     with st.form("add_blacklist"):
         domain = st.text_input("Domínio (ex: bad.com)")
         comment = st.text_input("Comentário (opcional)")

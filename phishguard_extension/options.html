@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>PhishGuard — Opções</title></head>
+<body>
+  <h2>Configurações PhishGuard</h2>
+  <label>Score para bloqueio automático: <input id="threshold" type="number" min="0" max="100"></label><br>
+  <label><input id="auto_block" type="checkbox"> Bloquear automaticamente quando acima do score</label><br>
+  <h3>Whitelist (domínios, um por linha)</h3>
+  <textarea id="whitelist" rows="6" cols="40"></textarea><br>
+  <button id="save">Salvar</button>
+  <script>
+    document.addEventListener("DOMContentLoaded", async () => {
+      const s = await browser.storage.local.get({whitelist: [], threshold: 65, auto_block: false});
+      document.getElementById("threshold").value = s.threshold;
+      document.getElementById("auto_block").checked = s.auto_block;
+      document.getElementById("whitelist").value = (s.whitelist||[]).join("\n");
+    });
+    document.getElementById("save").onclick = async () => {
+      const threshold = parseInt(document.getElementById("threshold").value||"65");
+      const auto_block = document.getElementById("auto_block").checked;
+      const whitelist = document.getElementById("whitelist").value.split(/\r?\n/).map(x=>x.trim()).filter(x=>x);
+      await browser.storage.local.set({threshold, auto_block, whitelist});
+      alert("Configurações salvas");
+    };
+  </script>
+</body>
+</html>
