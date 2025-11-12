@@ -11,6 +11,7 @@ O projeto tem:
 ## APIs e Ferramentas Utilizadas
 
 - **Google Safe Browsing API**: para verificação de URLs contra base de dados de sites maliciosos e phishing
+- **Phishing blacklist** raw file do Github (para conceitos anteriores)
 - **Análise WHOIS**: verificação de informações do domínio
 - **Verificação SSL/TLS**: validação de certificados de segurança
 - **Análise DNS**: verificação de registros DNS do domínio
