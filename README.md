@@ -42,6 +42,14 @@ O projeto tem:
   - Relatório de características encontradas pelas ferramentas
 - Usa os dados gravados em `data/history.db`.
 
+Para rodar o streamlit, basta subir o docker
+
+    docker compose build
+    docker compose up
+
+E se você quiser sair
+
+    docker compose down
 
 Exemplo:
 
